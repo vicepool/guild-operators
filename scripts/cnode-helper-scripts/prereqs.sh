@@ -13,6 +13,7 @@ unset CNODE_HOME
 #NETWORK='mainnet'      # Connect to specified network instead of public network (Default: connect to public cardano network)
 #SKIP_ALL_DEPS='Y'      # Skip installing all OS level dependencies (Default: will check and install any missing OS level prerequisites)
 #SKIP_BUILD_DEPS='Y'    # Skip installing source-build OS level dependencies (Default: will check and install any missing OS level prerequisites)
+#BINARY_STORE='http://' # without installed build deps this base URL can be used to download pre-built binaries from your own binary store
 #FORCE_OVERWRITE='N'    # Force overwrite of all files including normally saved user config sections in env, cnode.sh and gLiveView.sh
                         # topology.json, config.json and genesis files normally saved will also be overwritten
 #LIBSODIUM_FORK='N'     # Use IOG fork of libsodium - Recommended as per IOG instructions (Default: system build)
@@ -58,33 +59,43 @@ versionCheck() { printf '%s\n%s' "${1//v/}" "${2//v/}" | sort -C -V; } #$1=avail
 usage() {
   cat <<EOF >&2
 
-Usage: $(basename "$0") [-f] [-s] [-g] [-i] [-l] [-c] [-b <branch>] [-n <testnet|guild|launchpad>] [-t <name>] [-m <seconds>]
+Usage: $(basename "$0") [-f] [-s] [-g] [-i] [-l] [-c] [-b <branch>] [-n <testnet|guild|launchpad>] [-t <name>] [-m <seconds>] [-d <binary-store-url>]
+
 Install pre-requisites for building cardano node and using CNTools
 
--f    Force overwrite of all files including normally saved user config sections in env, cnode.sh and gLiveView.sh
-      topology.json, config.json and genesis files normally saved will also be overwritten
--s    Skip installing all OS level dependencies (Default: will check and install any missing OS level prerequisites)
--g    Skip installing source-build OS level dependencies (Default: will check and install any missing OS level prerequisites)
--n    Connect to specified network instead of public network (Default: connect to public cardano network)
-      eg: -n testnet
--t    Alternate name for top level folder, non alpha-numeric chars will be replaced with underscore (Default: cnode)
--m    Maximum time in seconds that you allow the file download operation to take before aborting (Default: 60s)
--l    Use IOG fork of libsodium - Recommended as per IOG instructions (Default: system build)
+-f    Force overwrite of all files including normally saved user config 
+      sections in env, cnode.sh and gLiveView.sh / topology.json, config.json 
+      and genesis files normally saved will also be overwritten
+-s    Skip installing all OS level dependencies (Default: will check and 
+      install any missing OS level prerequisites)
+-g    Skip installing source-build OS level dependencies (Default: will check
+      and install any missing OS level prerequisites)
+-d    Without build deps this base URL will be used to download pre-built bins
+-n    Connect to specified network instead of public network (Default: connect
+      to public cardano network) eg: -n testnet
+-t    Alternate name for top level folder, non alpha-numeric chars will be
+      replaced with underscore (Default: cnode)
+-m    Maximum time in seconds that you allow the file download operation to
+      take before aborting (Default: 60s)
+-l    Use IOG fork of libsodium - Recommended as per IOG instructions 
+      (Default: system build)
 -c    Install/Upgrade and build CNCLI with RUST
 -w    Install/Upgrade Vacuumlabs cardano-hw-cli for hardware wallet support
--b    Use alternate branch of scripts to download - only recommended for testing/development (Default: master)
+-b    Use alternate branch of scripts to download - only recommended for
+      testing/development (Default: master)
 -i    Interactive mode (Default: silent mode)
 
 EOF
   exit 1
 }
 
-while getopts :in:sgflcwt:m:b: opt; do
+while getopts :in:sgflcwt:m:b:d: opt; do
   case ${opt} in
     i ) INTERACTIVE='Y' ;;
     n ) NETWORK=${OPTARG} ;;
     s ) SKIP_ALL_DEPS='Y' ;;
     g ) SKIP_BUILD_DEPS='Y' ;;
+    d ) BINARY_STORE=${OPTARG} ;;
     f ) FORCE_OVERWRITE='Y' ;;
     l ) LIBSODIUM_FORK='Y' ;;
     c ) INSTALL_CNCLI='Y' ;;
@@ -167,6 +178,9 @@ if [ "${INTERACTIVE}" = 'Y' ]; then
   fi
   if get_answer "Do you want to skip installing source-build dependencies for cardano node?"; then
     SKIP_BUILD_DEPS='Y'
+    if get_answer "Do you want to download pre-built binaries from your binary store?"; then
+      BINARY_STORE=$(get_input "Please enter the binary store base URL (http://...) " ${BINARY_STORE})
+    fi
   fi
 fi
 
@@ -176,6 +190,12 @@ if [ "$SKIP_ALL_DEPS" = 'N' ]; then
   OS_ID=$(grep -i ^id_like= /etc/os-release | cut -d= -f 2)
   DISTRO=$(grep -i ^NAME= /etc/os-release | cut -d= -f 2)
 
+  debian_pkg_list_build="pkg-config libpq-dev build-essential libffi-dev libgmp-dev libssl-dev libtinfo-dev libsystemd-dev zlib1g-dev make g++ git"
+  rhel_pkg_list_build="pkgconfig libffi-devel gmp-devel openssl-devel systemd-devel zlib-devel make gcc-c++ git"
+
+  debian_pkg_list_tools="python3 libsodium-dev systemd libncursesw5 gnupg aptitude tmux jq libtool autoconf secure-delete iproute2 bc tcptraceroute dialog sqlite automake sqlite3 bsdmainutils"
+  rhel_pkg_list_tools="python3 libsodium-devel coreutils ncurses-libs ncurses-compat-libs systemd tmux jq gnupg libtool autoconf srm iproute bc tcptraceroute dialog sqlite util-linux xz"
+
   if [[ "${OS_ID}" =~ ebian ]] || [[ "${DISTRO}" =~ ebian ]]; then
     #Debian/Ubuntu
     echo "Using apt to prepare packages for ${DISTRO} system"
@@ -183,21 +203,21 @@ if [ "$SKIP_ALL_DEPS" = 'N' ]; then
     $sudo apt-get -y install curl > /dev/null
     $sudo apt-get -y update > /dev/null
     echo "  Installing missing prerequisite packages, if any.."
-    pkg_list_build="libpq-dev python3 build-essential pkg-config libffi-dev libgmp-dev libssl-dev libtinfo-dev libsystemd-dev libsodium-dev zlib1g-dev make g++ git"
-    pkg_list_tools="python3 pkg-config systemd tmux jq libncursesw5 gnupg aptitude libtool autoconf secure-delete iproute2 bc tcptraceroute dialog sqlite automake sqlite3 bsdmainutils"
-	if [ "$SKIP_BUILD_DEPS" = 'N' ]; then
-		$sudo apt-get -y install ${pkg_list_build} > /dev/null;rc=$?
-		if [ $rc != 0 ]; then
-		  echo "An error occurred while installing the prerequisite build packages, please investigate by using the command below:"
-		  echo "sudo apt-get -y install ${pkg_list_build}"
-		  echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
-		  err_exit
-		fi
-	fi
-    $sudo apt-get -y install ${pkg_list_tools} > /dev/null;rc=$?
+    if [[ "$SKIP_BUILD_DEPS" = 'N' ]]; then
+        echo "    build packages: $debian_pkg_list_build"
+        $sudo apt-get -y install ${debian_pkg_list_build} > /dev/null;rc=$?
+        if [ $rc != 0 ]; then
+          echo "An error occurred while installing the prerequisite build packages, please investigate by using the command below:"
+          echo "sudo apt-get -y install ${debian_pkg_list_build}"
+          echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
+          err_exit
+        fi
+    fi
+    echo "    tool packages: $debian_pkg_list_tools"
+    $sudo apt-get -y install ${debian_pkg_list_tools} > /dev/null;rc=$?
     if [ $rc != 0 ]; then
       echo "An error occurred while installing the prerequisite tool packages, please investigate by using the command below:"
-      echo "sudo apt-get -y install ${pkg_list_tools}"
+      echo "sudo apt-get -y install ${debian_pkg_list_tools}"
       echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
       err_exit
     fi
@@ -208,22 +228,22 @@ if [ "$SKIP_ALL_DEPS" = 'N' ]; then
     $sudo yum -y install curl > /dev/null
     $sudo yum -y update > /dev/null
     echo "  Installing missing prerequisite packages, if any.."
-    pkg_list_build="pkgconfig libffi-devel gmp-devel openssl-devel systemd-devel libsodium-devel zlib-devel make gcc-c++ git"
-    pkg_list_tools="python3 coreutils ncurses-libs ncurses-compat-libs systemd tmux jq gnupg libtool autoconf srm iproute bc tcptraceroute dialog sqlite util-linux xz"
     [[ ! "${DISTRO}" =~ Fedora ]] && $sudo yum -y install epel-release > /dev/null
-	if [ "$SKIP_BUILD_DEPS" = 'N' ]; then
-		$sudo yum -y install ${pkg_list_build} > /dev/null;rc=$?
-		if [ $rc != 0 ]; then
-		  echo "An error occurred while installing the prerequisite build packages, please investigate by using the command below:"
-		  echo "sudo yum -y install ${pkg_list_build}"
-		  echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
-		  err_exit
-		fi
-	fi
-    $sudo yum -y install ${pkg_list_tools} > /dev/null;rc=$?
+    if [[ "$SKIP_BUILD_DEPS" = 'N' ]]; then
+        echo "    build packages: $rhel_pkg_list_build"
+        $sudo yum -y install ${rhel_pkg_list_build} > /dev/null;rc=$?
+        if [ $rc != 0 ]; then
+          echo "An error occurred while installing the prerequisite build packages, please investigate by using the command below:"
+          echo "sudo yum -y install ${rhel_pkg_list_build}"
+          echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
+          err_exit
+        fi
+    fi
+    echo "    tool packages: $rhel_pkg_list_tools"
+    $sudo yum -y install ${rhel_pkg_list_tools} > /dev/null;rc=$?
     if [ $rc != 0 ]; then
       echo "An error occurred while installing the prerequisite tools packages, please investigate by using the command below:"
-      echo "sudo yum -y install ${pkg_list_tools}"
+      echo "sudo yum -y install ${rhel_pkg_list_tools}"
       echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
       err_exit
     fi
@@ -249,45 +269,82 @@ if [ "$SKIP_ALL_DEPS" = 'N' ]; then
     echo "We have no automated procedures for this ${DISTRO} system"
     echo "please manually install required packages."
     echo "Their relative names are:"
-    echo "Debian: curl build-essential pkg-config libffi-dev libgmp-dev libssl-dev libtinfo-dev libsystemd-dev zlib1g-dev tmux"
-    echo "CentOS: curl pkgconfig libffi-devel gmp-devel openssl-devel ncurses-libs ncurses-compat-libs systemd-devel zlib-devel tmux"
+    echo "Debian/Ubuntu:"
+    echo " build: $debian_pkg_list_build"
+    echo " tools: $debian_pkg_list_tools"
+    echo "CentOS/RHEL/Fedory:"
+    echo " build: $rhel_pkg_list_build"
+    echo " tools: $rhel_pkg_list_tools"
     err_exit
   fi
-  if ! ghc --version | grep -q 8\.10\.2 || ! cabal --version | grep -q version\ 3; then
-    echo "Install ghcup (The Haskell Toolchain installer) .."
-    # TMP: Dirty hack to prevent ghcup interactive setup, yet allow profile set up
-    unset BOOTSTRAP_HASKELL_NONINTERACTIVE
-    export BOOTSTRAP_HASKELL_NO_UPGRADE=1
-    curl -s -m ${CURL_TIMEOUT} --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sed -e 's#read.*#answer=Y;next_answer=Y;hls_answer=N#' | bash
-    . "${HOME}"/.ghcup/env
-
-    ghcup install ghc 8.10.2
-    ghcup set ghc 8.10.2
-    ghc --version
-
-    echo "Installing bundled Cabal .."
-    ghcup install-cabal
+  if [[ "$SKIP_BUILD_DEPS" = 'N' ]]; then
+    if ! ghc --version | grep -q 8\.10\.2 || ! cabal --version | grep -q version\ 3; then
+      echo "Install ghcup (The Haskell Toolchain installer) .."
+      # TMP: Dirty hack to prevent ghcup interactive setup, yet allow profile set up
+      unset BOOTSTRAP_HASKELL_NONINTERACTIVE
+      export BOOTSTRAP_HASKELL_NO_UPGRADE=1
+      curl -s -m ${CURL_TIMEOUT} --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sed -e 's#read.*#answer=Y;next_answer=Y;hls_answer=N#' | bash
+      . "${HOME}"/.ghcup/env
+  
+      ghcup install ghc 8.10.2
+      ghcup set ghc 8.10.2
+      ghc --version
+  
+      echo "Installing bundled Cabal .."
+      ghcup install-cabal
+    fi
+    
+    if [ ! -d "${HOME}"/.cabal/bin ]; then mkdir -p "${HOME}"/.cabal/bin; fi
+    
+    mkdir -p "${HOME}"/git > /dev/null 2>&1 # To hold git repositories that will be used for building binaries
   fi
 fi
 
-if [ ! -d "${HOME}"/.cabal/bin ]; then mkdir -p "${HOME}"/.cabal/bin; fi
-
 # END OF Install build deps.
 
-echo "Creating Folder Structure .."
-
+echo "Creating Folder Structure for ${CNODE_HOME} .."
+$sudo mkdir -p "${CNODE_HOME}"/files "${CNODE_HOME}"/db "${CNODE_HOME}"/guild-db "${CNODE_HOME}"/logs "${CNODE_HOME}"/scripts "${CNODE_HOME}"/sockets "${CNODE_HOME}"/priv
+$sudo chown -R "$U_ID":"$G_ID" "${CNODE_HOME}" 2>/dev/null
 if grep -q "${CNODE_VNAME}_HOME" "${HOME}"/.bashrc; then
   echo "Environment Variable already set up!"
 else
   echo "Setting up Environment Variable"
   echo "export ${CNODE_VNAME}_HOME=${CNODE_HOME}" >> "${HOME}"/.bashrc
-  
   . "${HOME}/".bashrc
 fi
 
-mkdir -p "${HOME}"/git > /dev/null 2>&1 # To hold git repositories that will be used for building binaries
+if [[ "$SKIP_BUILD_DEPS" = 'Y' ]] && ! [[ -z $BINARY_STORE ]]; then # download pre-built binaries from an URL
+  echo "Downloading and installing pre-built binaries from ${BINARY_STORE} ..."
+  if [ ! -d "${HOME}"/.local/bin ]; then mkdir -p "${HOME}"/.local/bin; fi
+  pushd "${HOME}"/.local/bin >/dev/null || err_exit
+  if ! grep -q ".local/bin" "${HOME}"/.bashrc; then
+    echo "adding ${HOME}/.local/bin to PATH"
+    echo "PATH=\"$HOME/.local/bin:\$PATH\"" >> "${HOME}"/.bashrc
+    . "${HOME}/".bashrc
+  fi
+  if [[ $(curl --write-out '%{http_code}' --silent -m ${CURL_TIMEOUT} -o cardano-node "${BINARY_STORE}/cardano-node") -ne 200 ]]; then
+    echo " WARN: failed downloading cardano-node"
+  else
+    chmod +x ${HOME}"/.local/bin/cardano-node"
+    echo "OK: $("${HOME}"/.local/bin/cardano-node --version)"
+  fi
+  if [[ $(curl --write-out '%{http_code}' --silent -m ${CURL_TIMEOUT} -o cardano-cli "${BINARY_STORE}/cardano-cli") -ne 200 ]]; then
+    echo " WARN: failed downloading cardano-cli"
+  else
+    chmod +x ${HOME}"/.local/bin/cardano-cli"
+    echo "OK: $("${HOME}"/.local/bin/cardano-cli --version)"
+  fi
+  if [[ "${INSTALL_CNCLI}" = "Y" ]]; then
+    if [[ $(curl --write-out '%{http_code}' --silent -m ${CURL_TIMEOUT} -o cncli "${BINARY_STORE}/cncli") -ne 200 ]]; then
+      echo " WARN: failed downloading cncli"
+    else
+      chmod +x ${HOME}"/.local/bin/cncli"
+      echo "OK: $("${HOME}"/.local/bin/cncli -V)"
+    fi
+  fi
+fi
 
-if [[ "${LIBSODIUM_FORK}" = "Y" ]]; then
+if [[ "${LIBSODIUM_FORK}" = "Y" ]] ; then
   if ! grep -q "/usr/local/lib:\$LD_LIBRARY_PATH" "${HOME}"/.bashrc; then
     echo "export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH" >> "${HOME}"/.bashrc
     export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
@@ -302,8 +359,8 @@ if [[ "${LIBSODIUM_FORK}" = "Y" ]]; then
   $sudo make install > install.log 2>&1
   echo "IOG fork of libsodium installed to /usr/local/lib/"
 fi
-
-if [[ "${INSTALL_CNCLI}" = "Y" ]]; then
+    
+if [[ "${INSTALL_CNCLI}" = "Y" ]] && [[ "$SKIP_BUILD_DEPS" = 'N' ]]; then
   if command -v cncli >/dev/null; then cncli_version="$(cncli -V | cut -d' ' -f2)"; else cncli_version="v0.0.0"; fi
   pushd "${HOME}"/git >/dev/null || err_exit
   if [[ -d ./cncli ]]; then
@@ -334,7 +391,7 @@ if [[ "${INSTALL_CNCLI}" = "Y" ]]; then
     echo "CNCLI already latest version [$(cncli -V | cut -d' ' -f2)], skipping!"
   fi
 fi
-
+    
 if [[ "${INSTALL_VCHC}" = "Y" ]]; then
   if command -v cardano-hw-cli >/dev/null; then vchc_version="$(cardano-hw-cli version 2>/dev/null | head -n 1 | cut -d' ' -f6)"; else vchc_version="0.0.0"; fi
   echo "downloading Vacuumlabs cardano-hw-cli..."
@@ -368,10 +425,7 @@ if [[ "${INSTALL_VCHC}" = "Y" ]]; then
   fi
 fi
 
-$sudo mkdir -p "${CNODE_HOME}"/files "${CNODE_HOME}"/db "${CNODE_HOME}"/guild-db "${CNODE_HOME}"/logs "${CNODE_HOME}"/scripts "${CNODE_HOME}"/sockets "${CNODE_HOME}"/priv
-$sudo chown -R "$U_ID":"$G_ID" "${CNODE_HOME}" 2>/dev/null
-
-echo "Downloading files..."
+echo "Downloading node config/script/genesis files..."
 
 pushd "${CNODE_HOME}"/files >/dev/null || err_exit
 curl -s -m ${CURL_TIMEOUT} -o config.json.tmp ${URL_RAW}/files/config-combinator.json 2>/dev/null
