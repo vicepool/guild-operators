@@ -11,7 +11,8 @@ unset CNODE_HOME
 
 #INTERACTIVE='N'        # Interactive mode (Default: silent mode)
 #NETWORK='mainnet'      # Connect to specified network instead of public network (Default: connect to public cardano network)
-#WANT_BUILD_DEPS='Y'    # Skip installing OS level dependencies (Default: will check and install any missing OS level prerequisites)
+#SKIP_ALL_DEPS='Y'      # Skip installing all OS level dependencies (Default: will check and install any missing OS level prerequisites)
+#SKIP_BUILD_DEPS='Y'    # Skip installing source-build OS level dependencies (Default: will check and install any missing OS level prerequisites)
 #FORCE_OVERWRITE='N'    # Force overwrite of all files including normally saved user config sections in env, cnode.sh and gLiveView.sh
                         # topology.json, config.json and genesis files normally saved will also be overwritten
 #LIBSODIUM_FORK='N'     # Use IOG fork of libsodium - Recommended as per IOG instructions (Default: system build)
@@ -57,12 +58,13 @@ versionCheck() { printf '%s\n%s' "${1//v/}" "${2//v/}" | sort -C -V; } #$1=avail
 usage() {
   cat <<EOF >&2
 
-Usage: $(basename "$0") [-f] [-s] [-i] [-l] [-c] [-b <branch>] [-n <testnet|guild|launchpad>] [-t <name>] [-m <seconds>]
+Usage: $(basename "$0") [-f] [-s] [-g] [-i] [-l] [-c] [-b <branch>] [-n <testnet|guild|launchpad>] [-t <name>] [-m <seconds>]
 Install pre-requisites for building cardano node and using CNTools
 
 -f    Force overwrite of all files including normally saved user config sections in env, cnode.sh and gLiveView.sh
       topology.json, config.json and genesis files normally saved will also be overwritten
--s    Skip installing OS level dependencies (Default: will check and install any missing OS level prerequisites)
+-s    Skip installing all OS level dependencies (Default: will check and install any missing OS level prerequisites)
+-g    Skip installing source-build OS level dependencies (Default: will check and install any missing OS level prerequisites)
 -n    Connect to specified network instead of public network (Default: connect to public cardano network)
       eg: -n testnet
 -t    Alternate name for top level folder, non alpha-numeric chars will be replaced with underscore (Default: cnode)
@@ -77,11 +79,12 @@ EOF
   exit 1
 }
 
-while getopts :in:sflcwt:m:b: opt; do
+while getopts :in:sgflcwt:m:b: opt; do
   case ${opt} in
     i ) INTERACTIVE='Y' ;;
     n ) NETWORK=${OPTARG} ;;
-    s ) WANT_BUILD_DEPS='N' ;;
+    s ) SKIP_ALL_DEPS='Y' ;;
+    g ) SKIP_BUILD_DEPS='Y' ;;
     f ) FORCE_OVERWRITE='Y' ;;
     l ) LIBSODIUM_FORK='Y' ;;
     c ) INSTALL_CNCLI='Y' ;;
@@ -96,7 +99,8 @@ shift $((OPTIND -1))
 
 [[ -z ${INTERACTIVE} ]] && INTERACTIVE='N'
 [[ -z ${NETWORK} ]] && NETWORK='mainnet'
-[[ -z ${WANT_BUILD_DEPS} ]] && WANT_BUILD_DEPS='Y'
+[[ -z ${SKIP_ALL_DEPS} ]] && SKIP_ALL_DEPS='N'
+[[ -z ${SKIP_BUILD_DEPS} ]] && SKIP_BUILD_DEPS='N'
 [[ -z ${FORCE_OVERWRITE} ]] && FORCE_OVERWRITE='N'
 [[ -z ${LIBSODIUM_FORK} ]] && LIBSODIUM_FORK='N'
 [[ -z ${INSTALL_CNCLI} ]] && INSTALL_CNCLI='N'
@@ -158,12 +162,15 @@ if [ "${INTERACTIVE}" = 'Y' ]; then
     err_exit "The \"${CNODE_HOME}\" directory exist, pls remove or choose an other one."
   fi
 
-  if ! get_answer "Do you want to install build dependencies for cardano node?"; then
-    WANT_BUILD_DEPS='N'
+  if get_answer "Do you want to skip installing ALL build dependencies AND tools for cardano node?"; then
+    SKIP_ALL_DEPS='Y'
+  fi
+  if get_answer "Do you want to skip installing source-build dependencies for cardano node?"; then
+    SKIP_BUILD_DEPS='Y'
   fi
 fi
 
-if [ "$WANT_BUILD_DEPS" = 'Y' ]; then
+if [ "$SKIP_ALL_DEPS" = 'N' ]; then
 
   # Determine OS platform
   OS_ID=$(grep -i ^id_like= /etc/os-release | cut -d= -f 2)
@@ -176,11 +183,21 @@ if [ "$WANT_BUILD_DEPS" = 'Y' ]; then
     $sudo apt-get -y install curl > /dev/null
     $sudo apt-get -y update > /dev/null
     echo "  Installing missing prerequisite packages, if any.."
-    pkg_list="libpq-dev python3 build-essential pkg-config libffi-dev libgmp-dev libssl-dev libtinfo-dev systemd libsystemd-dev libsodium-dev zlib1g-dev make g++ tmux git jq libncursesw5 gnupg aptitude libtool autoconf secure-delete iproute2 bc tcptraceroute dialog sqlite automake sqlite3 bsdmainutils"
-    $sudo apt-get -y install ${pkg_list} > /dev/null;rc=$?
+    pkg_list_build="libpq-dev python3 build-essential pkg-config libffi-dev libgmp-dev libssl-dev libtinfo-dev libsystemd-dev libsodium-dev zlib1g-dev make g++ git"
+    pkg_list_tools="python3 pkg-config systemd tmux jq libncursesw5 gnupg aptitude libtool autoconf secure-delete iproute2 bc tcptraceroute dialog sqlite automake sqlite3 bsdmainutils"
+	if [ "$SKIP_BUILD_DEPS" = 'N' ]; then
+		$sudo apt-get -y install ${pkg_list_build} > /dev/null;rc=$?
+		if [ $rc != 0 ]; then
+		  echo "An error occurred while installing the prerequisite build packages, please investigate by using the command below:"
+		  echo "sudo apt-get -y install ${pkg_list_build}"
+		  echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
+		  err_exit
+		fi
+	fi
+    $sudo apt-get -y install ${pkg_list_tools} > /dev/null;rc=$?
     if [ $rc != 0 ]; then
-      echo "An error occurred while installing the prerequisite packages, please investigate by using the command below:"
-      echo "sudo apt-get -y install ${pkg_list}"
+      echo "An error occurred while installing the prerequisite tool packages, please investigate by using the command below:"
+      echo "sudo apt-get -y install ${pkg_list_tools}"
       echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
       err_exit
     fi
@@ -191,12 +208,22 @@ if [ "$WANT_BUILD_DEPS" = 'Y' ]; then
     $sudo yum -y install curl > /dev/null
     $sudo yum -y update > /dev/null
     echo "  Installing missing prerequisite packages, if any.."
-    pkg_list="python3 coreutils pkgconfig libffi-devel gmp-devel openssl-devel ncurses-libs ncurses-compat-libs systemd systemd-devel libsodium-devel zlib-devel make gcc-c++ tmux git jq gnupg libtool autoconf srm iproute bc tcptraceroute dialog sqlite util-linux xz"
+    pkg_list_build="pkgconfig libffi-devel gmp-devel openssl-devel systemd-devel libsodium-devel zlib-devel make gcc-c++ git"
+    pkg_list_tools="python3 coreutils ncurses-libs ncurses-compat-libs systemd tmux jq gnupg libtool autoconf srm iproute bc tcptraceroute dialog sqlite util-linux xz"
     [[ ! "${DISTRO}" =~ Fedora ]] && $sudo yum -y install epel-release > /dev/null
-    $sudo yum -y install ${pkg_list} > /dev/null;rc=$?
+	if [ "$SKIP_BUILD_DEPS" = 'N' ]; then
+		$sudo yum -y install ${pkg_list_build} > /dev/null;rc=$?
+		if [ $rc != 0 ]; then
+		  echo "An error occurred while installing the prerequisite build packages, please investigate by using the command below:"
+		  echo "sudo yum -y install ${pkg_list_build}"
+		  echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
+		  err_exit
+		fi
+	fi
+    $sudo yum -y install ${pkg_list_tools} > /dev/null;rc=$?
     if [ $rc != 0 ]; then
-      echo "An error occurred while installing the prerequisite packages, please investigate by using the command below:"
-      echo "sudo yum -y install ${pkg_list}"
+      echo "An error occurred while installing the prerequisite tools packages, please investigate by using the command below:"
+      echo "sudo yum -y install ${pkg_list_tools}"
       echo "It would be best if you could submit an issue at ${REPO} with the details to tackle in future, as some errors may be due to external/already present dependencies"
       err_exit
     fi
