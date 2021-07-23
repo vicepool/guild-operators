@@ -32,7 +32,7 @@ Install and setup haproxy, and create systemd services for haproxy, postgREST an
 
 -f    Force overwrite of all files including normally saved user config sections 
 -t    Alternate name for top level folder, non alpha-numeric chars will be replaced with underscore (Default: cnode)
--b    Use alternate branch of scripts to download - only recommended for testing/development (Default: master)
+-b    Use alternate branch of scripts to download - only recommended for testing/development (Default: alpha)
 
 EOF
   exit 1
